@@ -1,96 +1,148 @@
-### SENTENCE TRANSFORMER MODEL (all-MiniLM-L6-v2)
+# Vector Embedding Demo
 
-• High level (Project Idea) – built a local semantic intent classification system using sentence embeddings 
-and a vector database, with confidence-based workflow routing. Exposed the semantic search system 
-via a REST API and tested it using Postman with query parameters. 
+A local semantic intent classification system built with sentence embeddings and a vector database. Given a natural language query, the system finds the most similar banking intent from the **PolyAI/Banking77** dataset using cosine similarity, scores confidence, and routes the query to the appropriate workflow — all without keyword matching or traditional classifiers.
 
-• Given a user query → 
-1. Find the most similar intent from Banking77 (sample dataset used) using semantic search 
-2. Return Top-K intents 
-3. Compute confidence score 
-4. Decide next workflow based on confidence
+Exposed as a REST API and tested via Postman.
 
-• Architecture Overview
+---
 
-This project implements a semantic intent-matching pipeline using sentence embeddings and a vector database to power confident workflow decisions.
+## Architecture
 
-HuggingFace Dataset (PolyAI / Banking77)
-
+```
+HuggingFace Dataset (PolyAI/Banking77)
             ↓
-            
-Sentence Transformer (Model: all-MiniLM-L6-v2)
-
+Sentence Transformer (all-MiniLM-L6-v2)
             ↓
-            
-Vector Embeddings (384-d)
-
+  Vector Embeddings (384-d, normalized)
             ↓
-            
-Qdrant Vector Database (Cosine Similarity, Local / SQLite / Docker)
-
+  Qdrant Vector Database (Cosine Similarity)
             ↓
-            
-User Query
-
+        User Query
             ↓
-            
-Query Embedding (384-d)
-
+   Query Embedding (384-d)
             ↓
-            
-Top-K Semantic Search (k = 3)
-
+  Top-K Semantic Search (k = 3)
             ↓
-            
-Confidence Scoring (Boost if top-k labels match)
-
+       Confidence Scoring
             ↓
-            
-Workflow Decision Engine
+   Workflow Decision Engine
+```
 
-• Dataset  - 
-- PolyAI/Bnaking 77, There are 77 intents related to banking sector
-- Multiple utterances of each intent (10-13k queries) 
-- Ex = “text” = “How do I change my card pin?” 
-  “label” = 12 
-- Store each utterance as a separate vector with intent_label, intent_name, utterance_text.
+---
 
-• Requirements - 
-- sentence-transformers
-- datasets 
-- qdrant-client 
-- fastapi 
-- uvicorn 
-- numpy 
-- scikit-learn 
-- torch
-  
-• Loading Dataset - 
-- Each record has text, label.
-- Later we’ll map label to intent_name. 
-- Using load_datasets function
-  
-• Generate Embeddings - 
-- From all the available model to test and understand the concept “all-MiniLM-L6-v2” is a good model, fast and accuracy-based judgement.
-- Embeddings are normalized to ensure cosine function works properly (0-1)
+## How It Works
 
-• Ingesting dataset to Vector embedded DB 
+### 1. Dataset
 
-• User Query  - 
-- Returned result contains Similarity_score and payload. 
-- Similarity_score = shows the cosine similarity 
-- Payload = intent info 
+The project uses the **PolyAI/Banking77** dataset — 77 intents covering common banking queries, with 10–13k total utterances (roughly 10–13 per intent). Each record contains a `text` (e.g. `"How do I change my card pin?"`) and a `label` (integer, mapped to an `intent_name`). Every utterance is stored as a separate vector in Qdrant, tagged with `intent_label`, `intent_name`, and `utterance_text`.
 
-• Confidence Score (Logic) - 
-- Normalized is preferred as returning only the very first would have been naïve and there could have been better outcomes further. 
-- It considers the absolute similarity & relative gap between the top and second top outcome. 
+### 2. Embeddings
 
-• Suggested Outcome  - 
-- Hardcoded the sample workflows and let the system classify the text according to confidence_scores. 
-- If >=0.75, then follow the desired workflow or else if >=0.50 & <0.75, ask for clarification or else fallback to human agent.
+The `all-MiniLM-L6-v2` sentence transformer was chosen for its balance of speed and accuracy. All embeddings are L2-normalized before storage so cosine similarity values fall cleanly in the 0–1 range.
 
-• Positive Aspects  - 
-- Avoided traditional classifiers which relies on keywords, and regex matching. Rather focused on semantic searches using cosine similarity function which doesn’t rely on the magnitude rather judges on the basis of direction of vector as well. So, instead of referring to exactly same matchings, it refers to similar (similar in direction aka meaning) matchings as well. 
-- The confidence-based routing was done to improve the confidence visibility. If all the top k results give the same intent (all scores 0.95 or above) then confidence is boosted by – min/max(0.95, top). So, that the system shows 95-100% confidence in the result. Ambiguity is intra-intent, not inter-intent. 
-- Using the cosine similarity matching it scales to unseen intents as well without the need to retrain the model. 
-- Cases when score is high but confidence is low, Cosine similarity measures semantic closeness, but confidence measures intent separability. If multiple intents score similarly, the system avoids auto-execution and safely falls back. Because your confidence ≠ similarity.  Your confidence logic measures how unique the best match is, not how good it is. 
+### 3. Semantic Search
+
+When a user query arrives, it is embedded using the same model and a top-3 nearest-neighbour search is run against Qdrant. Each result returns a `similarity_score` (cosine similarity) and a payload containing the matched intent.
+
+### 4. Confidence Scoring
+
+Returning only the top-1 result would be naïve — a high similarity score doesn't always mean a clear winner. The confidence score accounts for both:
+
+- **Absolute similarity** — how close the best match is
+- **Relative gap** — how far ahead the top match is from the second-best
+
+If all top-k results share the same intent label (intra-intent agreement), confidence is boosted using `min/max(0.95, top_score)`, pushing the score toward 95–100%. This captures cases where the system is clearly right but the raw scores didn't quite reflect it.
+
+> **Key distinction:** Cosine similarity measures semantic closeness. Confidence measures intent separability. A high similarity score with a low gap between top results means the system is uncertain which intent the user meant — and should not auto-execute.
+
+### 5. Workflow Routing
+
+Based on the confidence score, the system routes to one of three outcomes:
+
+| Confidence | Action |
+|---|---|
+| ≥ 0.75 | Execute the matched workflow automatically |
+| 0.50 – 0.74 | Ask the user for clarification |
+| < 0.50 | Fall back to a human agent |
+
+---
+
+## Why Semantic Search Over Traditional Classifiers
+
+Traditional approaches rely on keyword matching or regex, which fail on paraphrases and unseen phrasing. This system uses cosine similarity over dense vector embeddings, which:
+
+- Matches on **meaning** (direction of vector), not exact words
+- Generalises to **unseen phrasings** without retraining
+- Avoids brittle regex rules that need manual maintenance
+
+---
+
+## Project Structure
+
+```
+Vector-Embedding-Demo/
+├── app/              # FastAPI application and route handlers
+├── qdrant_data/      # Local Qdrant storage
+├── requirements.txt
+└── README.md
+```
+
+---
+
+## Setup
+
+### Prerequisites
+
+- Python 3.9+
+- Docker (for running Qdrant locally)
+
+### Install dependencies
+
+```bash
+git clone https://github.com/Anshita0310/Vector-Embedding-Demo.git
+cd Vector-Embedding-Demo
+
+python -m venv venv
+source venv/bin/activate        # Windows: venv\Scripts\activate
+
+pip install -r requirements.txt
+```
+
+### Start Qdrant
+
+```bash
+docker run -p 6333:6333 qdrant/qdrant
+```
+
+Or use the included `qdrant_data/` folder to run Qdrant with persistent local storage.
+
+### Run the API
+
+```bash
+uvicorn app.main:app --reload
+```
+
+The API will be available at `http://localhost:8000`.
+
+Interactive docs: `http://localhost:8000/docs`
+
+---
+
+## Dependencies
+
+```
+sentence-transformers
+datasets
+qdrant-client
+fastapi
+uvicorn
+numpy
+scikit-learn
+torch
+```
+
+---
+
+## License
+
+This project does not currently specify a license. All rights reserved by the author.
